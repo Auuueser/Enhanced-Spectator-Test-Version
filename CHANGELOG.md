@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.2
+
+### Spectator Stability
+
+- Improved local-only spectator behavior when joining an unmodded host.
+- Repaired cases where revived connected players could remain unavailable as spectator targets on another installed client.
+- Improved fallback name repair for generic `Player #n` labels when compatible peer identity data is unavailable.
+- Kept enhanced freecam active after valid vanilla spectator target selection in local-only sessions.
+
+### Compatibility
+
+- Local freecam remains available for installed clients when the host is unmodded.
+- Multiplayer presence, floating-head visuals, name tags, and routed spectator voice continue to require compatible Enhanced Spectator peers and a modded relay host.
+
 ## 0.1.1
 
 ### Visuals

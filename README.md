@@ -6,7 +6,7 @@ The mod is designed to preserve the game's vanilla death state, spectator target
 
 ## Status
 
-Version: `0.1.1`
+Version: `0.1.2`
 
 Current public test features:
 
@@ -17,6 +17,7 @@ Current public test features:
 - Remote/dead spectator visibility for compatible modded peers.
 - Speaking head scale and pulse driven by synced voice activity.
 - Configurable routed dead-spectator voice, positional playback, and distance attenuation.
+- Local-only spectator stability improvements for unmodded-host sessions.
 
 This repository does not contain game DLLs, Unity assemblies, exported assets, BepInEx runtime files, logs, or packaged Thunderstore output.
 
