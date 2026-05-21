@@ -1079,13 +1079,13 @@ public sealed class EnhancedSpectatorConfig
             "Networking",
             "RepairVanillaConnectedPlayerState",
             true,
-            "Repairs late vanilla connected-player controlled flags for already identified modded peers. This fixes first-join cases where another modded client is missing from the ESC player list or vanilla spectator target list.");
+            "Repairs late vanilla connected-player controlled flags using vanilla ClientPlayerList. This also runs in local-only sessions when the host is unmodded, fixing cases where another connected client is missing from the ESC player list or vanilla spectator target list.");
 
         ConfigEntry<bool> repairVanillaPlayerNames = config.Bind(
             "Networking",
             "RepairVanillaPlayerNames",
             true,
-            "Applies synced Enhanced Spectator peer names to repaired vanilla player scripts and the ESC player list when vanilla still reports generic Player # names.");
+            "Applies synced Enhanced Spectator peer names, or a vanilla Steam lobby fallback when no mod peer identity is available, to repaired player scripts and the ESC player list when vanilla still reports generic Player # names.");
 
         ConfigEntry<bool> debugPlayerStateRepair = config.Bind(
             "Networking",

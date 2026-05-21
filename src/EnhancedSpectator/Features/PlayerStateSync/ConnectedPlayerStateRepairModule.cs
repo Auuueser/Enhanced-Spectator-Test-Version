@@ -52,8 +52,7 @@ public sealed class ConnectedPlayerStateRepairModule : IFeatureModule, IRuntimeT
         }
 
         _nextRepairTime = Time.unscaledTime + RepairIntervalSeconds;
-        if (!RuntimeConnectionState.CanUseModNetworking(out _)
-            || !_networkService.IsNetworkAvailable)
+        if (!RuntimeConnectionState.CanRepairVanillaPlayerState(out _))
         {
             return;
         }

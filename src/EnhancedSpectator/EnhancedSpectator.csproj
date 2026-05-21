@@ -43,5 +43,9 @@
                HintPath="$(ManagedDir)\DissonanceVoip.dll"
                Private="false"
                Condition="Exists('$(ManagedDir)\DissonanceVoip.dll')" />
+    <Reference Include="Facepunch.Steamworks.Win64"
+               HintPath="$(ManagedDir)\Facepunch.Steamworks.Win64.dll"
+               Private="false"
+               Condition="Exists('$(ManagedDir)\Facepunch.Steamworks.Win64.dll')" />
   </ItemGroup>
 </Project>

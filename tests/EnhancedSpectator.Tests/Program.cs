@@ -33,6 +33,9 @@ internal static class Program
             GlobalRemoteSpectatorVisibilityAllowsNonLocalTargets();
             RemoteSpectatorVisibilityRequiresMatchingPose();
             RemoteTargetRegistryRetainsInactiveStateForRepair();
+            ConnectedAliveVanillaSlotRepairRunsWithoutModIdentity();
+            DeadVanillaSlotRepairDoesNotRestoreControl();
+            VanillaFallbackNameOnlyReplacesGenericLabels();
             GenericPlayerNumberDisplayNamesAreRejected();
             GenericPlayerNumberDisplayNamesIgnoreNonSpaceWhitespace();
             RealDisplayNamesAreAcceptedAndTrimmed();
@@ -455,6 +458,67 @@ internal static class Program
             registry.TryGet(3, out SpectatorTargetState inactiveState),
             "inactive remote target state should be retained so player-state repair can clear stale dead flags");
         AssertFalse(inactiveState.IsSpectating, "retained inactive state should preserve the alive/non-spectating signal");
+    }
+
+    private static void ConnectedAliveVanillaSlotRepairRunsWithoutModIdentity()
+    {
+        AssertTrue(
+            ConnectedPlayerStateRepairRules.ShouldRestoreConnectedAliveControl(
+                isLocalPlayer: false,
+                isCurrentlyConnected: true,
+                isPlayerControlled: false,
+                isPlayerDead: false),
+            "connected non-local alive vanilla slots should be restored to controlled even without mod identity");
+
+        AssertTrue(
+            ConnectedPlayerStateRepairRules.ShouldClearDisconnectedMidGame(
+                isLocalPlayer: false,
+                isCurrentlyConnected: true,
+                disconnectedMidGame: true),
+            "connected non-local vanilla slots should clear stale disconnectedMidGame");
+    }
+
+    private static void DeadVanillaSlotRepairDoesNotRestoreControl()
+    {
+        AssertFalse(
+            ConnectedPlayerStateRepairRules.ShouldRestoreConnectedAliveControl(
+                isLocalPlayer: false,
+                isCurrentlyConnected: true,
+                isPlayerControlled: false,
+                isPlayerDead: true),
+            "connected dead vanilla slots must not be restored to controlled without explicit revive evidence");
+
+        AssertFalse(
+            ConnectedPlayerStateRepairRules.ShouldRestoreConnectedAliveControl(
+                isLocalPlayer: true,
+                isCurrentlyConnected: true,
+                isPlayerControlled: false,
+                isPlayerDead: false),
+            "local player state must not be repaired by remote-slot vanilla repair");
+    }
+
+    private static void VanillaFallbackNameOnlyReplacesGenericLabels()
+    {
+        AssertTrue(
+            ConnectedPlayerStateRepairRules.ShouldUseVanillaFallbackDisplayName(
+                updatePlayerNames: true,
+                hasModIdentityDisplayName: false,
+                currentDisplayName: "Player #1"),
+            "vanilla fallback names should be allowed for generic Player #n labels");
+
+        AssertFalse(
+            ConnectedPlayerStateRepairRules.ShouldUseVanillaFallbackDisplayName(
+                updatePlayerNames: true,
+                hasModIdentityDisplayName: false,
+                currentDisplayName: "Ueser"),
+            "vanilla fallback names should not overwrite already real names");
+
+        AssertFalse(
+            ConnectedPlayerStateRepairRules.ShouldUseVanillaFallbackDisplayName(
+                updatePlayerNames: true,
+                hasModIdentityDisplayName: true,
+                currentDisplayName: "Player #1"),
+            "mod identity names should take priority over vanilla fallback names");
     }
 
     private static void GenericPlayerNumberDisplayNamesAreRejected()
