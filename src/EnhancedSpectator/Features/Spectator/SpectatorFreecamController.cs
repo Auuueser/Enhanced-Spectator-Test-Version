@@ -1,6 +1,7 @@
 using System;
 using EnhancedSpectator.GameInterop;
 using EnhancedSpectator.Logging;
+using EnhancedSpectator.Runtime;
 using UnityEngine;
 
 namespace EnhancedSpectator.Features.Spectator;
@@ -214,13 +215,7 @@ public sealed class SpectatorFreecamController
     {
         try
         {
-            _ = renderingCamera;
-            if (!_state.UserEnabled || !_hasPose)
-            {
-                return;
-            }
-
-            if (_lastPreCullApplyFrame == Time.frameCount)
+            if (renderingCamera == null || !_state.UserEnabled || !_hasPose)
             {
                 return;
             }
@@ -231,7 +226,12 @@ public sealed class SpectatorFreecamController
             }
 
             Camera? spectateCamera = snapshot.SpectateCamera;
-            if (spectateCamera == null)
+            if (spectateCamera == null || renderingCamera != spectateCamera)
+            {
+                return;
+            }
+
+            if (_lastPreCullApplyFrame == Time.frameCount)
             {
                 return;
             }
@@ -267,6 +267,17 @@ public sealed class SpectatorFreecamController
         {
             DeactivateWithReason(SpectatorFreecamIneligibleReason.FeatureDisabled, GameSpectatorSnapshot.Unavailable, clearAnchor: false);
             snapshot = GameSpectatorSnapshot.Unavailable;
+            return false;
+        }
+
+        if (!RuntimeConnectionState.CanRunLocalDiagnostics(out _))
+        {
+            snapshot = GameSpectatorSnapshot.Unavailable;
+            if (!TrySoftPause(SpectatorFreecamIneligibleReason.LifecycleUnsafe, snapshot))
+            {
+                DeactivateWithReason(SpectatorFreecamIneligibleReason.LifecycleUnsafe, snapshot, clearAnchor: false);
+            }
+
             return false;
         }
 

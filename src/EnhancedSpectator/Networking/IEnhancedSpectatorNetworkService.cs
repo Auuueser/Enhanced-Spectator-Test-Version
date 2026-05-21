@@ -19,6 +19,11 @@ public interface IEnhancedSpectatorNetworkService
     bool IsTargetSyncEnabled { get; }
 
     /// <summary>
+    /// Gets whether at least one compatible Enhanced Spectator peer has completed capability handshake.
+    /// </summary>
+    bool HasCompatibleModPeer { get; }
+
+    /// <summary>
     /// Gets the current mod network lifecycle state.
     /// </summary>
     NetworkLifecycleState LifecycleState { get; }

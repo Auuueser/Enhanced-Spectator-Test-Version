@@ -16,6 +16,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
 {
     private const float CapabilityStableDelaySeconds = 0.35f;
     private const int CapabilityStableDelayFrames = 3;
+    private const float CompatiblePeerProbeTimeoutSeconds = 2.5f;
 
     private readonly EnhancedSpectatorConfig _config;
     private readonly ISpectatorTargetStateProvider _spectatorTargetStateProvider;
@@ -23,6 +24,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
     private readonly IPeerIdentityStateProvider _peerIdentityStateProvider;
     private readonly IVoiceActivityProvider _voiceActivityProvider;
     private readonly IModNetworkTransport _transport;
+    private readonly INetworkRuntimeState _runtimeState;
     private readonly RemotePeerRegistry _peerRegistry = new RemotePeerRegistry();
     private readonly RemoteSpectatorTargetRegistry _remoteTargetRegistry = new RemoteSpectatorTargetRegistry();
     private readonly RemoteSpectatorPoseRegistry _remotePoseRegistry = new RemoteSpectatorPoseRegistry();
@@ -44,7 +46,10 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
     private bool _initialized;
     private bool _networkAvailable;
     private bool _targetSyncReady;
+    private bool _hasCompatibleModPeer;
+    private bool _noCompatiblePeerLocalOnly;
     private bool _capabilitySent;
+    private float _capabilityProbeSentRealtime = -1f;
     private ulong? _lastLocalClientId;
     private float _nextTargetSyncTime;
     private float _nextPoseSyncTime;
@@ -71,7 +76,8 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             spectatorModule,
             spectatorModule,
             new LethalCompanyVoiceActivityProvider(),
-            new UnityNetcodeMessagingTransport(() => config.DebugNetworkMessages.Value))
+            new UnityNetcodeMessagingTransport(() => config.DebugNetworkMessages.Value),
+            UnityNetworkRuntimeState.Instance)
     {
     }
 
@@ -85,6 +91,28 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         IPeerIdentityStateProvider peerIdentityStateProvider,
         IVoiceActivityProvider voiceActivityProvider,
         IModNetworkTransport transport)
+        : this(
+            config,
+            spectatorTargetStateProvider,
+            spectatorPoseStateProvider,
+            peerIdentityStateProvider,
+            voiceActivityProvider,
+            transport,
+            UnityNetworkRuntimeState.Instance)
+    {
+    }
+
+    /// <summary>
+    /// Creates the networking service with explicit testable runtime dependencies.
+    /// </summary>
+    public EnhancedSpectatorNetworkService(
+        EnhancedSpectatorConfig config,
+        ISpectatorTargetStateProvider spectatorTargetStateProvider,
+        ISpectatorPoseStateProvider spectatorPoseStateProvider,
+        IPeerIdentityStateProvider peerIdentityStateProvider,
+        IVoiceActivityProvider voiceActivityProvider,
+        IModNetworkTransport transport,
+        INetworkRuntimeState runtimeState)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _spectatorTargetStateProvider = spectatorTargetStateProvider ?? throw new ArgumentNullException(nameof(spectatorTargetStateProvider));
@@ -92,6 +120,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         _peerIdentityStateProvider = peerIdentityStateProvider ?? throw new ArgumentNullException(nameof(peerIdentityStateProvider));
         _voiceActivityProvider = voiceActivityProvider ?? throw new ArgumentNullException(nameof(voiceActivityProvider));
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
+        _runtimeState = runtimeState ?? throw new ArgumentNullException(nameof(runtimeState));
     }
 
     /// <inheritdoc />
@@ -99,6 +128,9 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
 
     /// <inheritdoc />
     public bool IsTargetSyncEnabled => _targetSyncReady;
+
+    /// <inheritdoc />
+    public bool HasCompatibleModPeer => _hasCompatibleModPeer;
 
     /// <inheritdoc />
     public NetworkLifecycleState LifecycleState => _lifecycleState;
@@ -132,7 +164,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
                 return;
             }
 
-            if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+            if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
             {
                 StopNetworkingForLifecycle(lifecycleReason);
                 return;
@@ -149,6 +181,13 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             PruneDisconnectedPeers();
             SendLocalCapabilityIfNeeded();
             UpdateTargetSyncReadiness();
+            UpdateCompatiblePeerProbeState();
+            if (!NetworkCompatibilityPolicy.ShouldRunBusinessSync(_lifecycleState, _targetSyncReady))
+            {
+                ClearPendingBusinessSync();
+                return;
+            }
+
             UpdateAndSendLocalPeerIdentity();
             UpdateLocalSpectatorTarget();
             UpdateLocalSpectatorPose();
@@ -208,7 +247,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         }
 
         long staleTicks = TimeSpan.FromSeconds(Mathf.Max(0f, _config.VoiceActivityStaleSeconds.Value)).Ticks;
-        if (VoiceActivitySyncRules.IsFresh(receivedAtTicks, DateTime.UtcNow.Ticks, staleTicks))
+        if (VoiceActivitySyncRules.IsFresh(receivedAtTicks, _runtimeState.UtcNowTicks, staleTicks))
         {
             return true;
         }
@@ -286,9 +325,11 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         }
 
         _capabilitySent = false;
+        _capabilityProbeSentRealtime = -1f;
+        _noCompatiblePeerLocalOnly = false;
         _lastLocalClientId = _transport.LocalClientId;
-        _transportRegisteredFrame = Time.frameCount;
-        _transportRegisteredRealtime = Time.realtimeSinceStartup;
+        _transportRegisteredFrame = _runtimeState.FrameCount;
+        _transportRegisteredRealtime = _runtimeState.RealtimeSinceStartup;
         _lastDegradationReason = null;
         Debug("Custom messaging transport registered.");
         return true;
@@ -316,8 +357,10 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             _pendingVoiceActivityRefresh = false;
             _lastSentIdentityState = null;
             _capabilitySent = false;
-            _transportRegisteredFrame = Time.frameCount;
-            _transportRegisteredRealtime = Time.realtimeSinceStartup;
+            _capabilityProbeSentRealtime = -1f;
+            _noCompatiblePeerLocalOnly = false;
+            _transportRegisteredFrame = _runtimeState.FrameCount;
+            _transportRegisteredRealtime = _runtimeState.RealtimeSinceStartup;
             Debug($"Local Netcode client id changed from {_lastLocalClientId.Value} to {localClientId}; reset network state.");
         }
 
@@ -338,7 +381,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             StopNetworkingForLifecycle(lifecycleReason);
             return;
@@ -355,6 +398,8 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         if (_transport.SendCapability(capability, null, out string reason))
         {
             _capabilitySent = true;
+            _capabilityProbeSentRealtime = _runtimeState.RealtimeSinceStartup;
+            _noCompatiblePeerLocalOnly = false;
             Debug(
                 $"Capability sent: client={capability.ClientId}, targetSync={capability.SupportsSpectatorTargetSync}, voiceSync={capability.SupportsVoiceActivitySync}, voiceRoute={capability.SupportsSpectatorVoiceToTarget}.");
             return;
@@ -365,14 +410,14 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
 
     private bool IsTransportStableForCapability(out string reason)
     {
-        int framesSinceRegistration = Time.frameCount - _transportRegisteredFrame;
+        int framesSinceRegistration = _runtimeState.FrameCount - _transportRegisteredFrame;
         if (_transportRegisteredFrame < 0 || framesSinceRegistration < CapabilityStableDelayFrames)
         {
             reason = $"transport registered {Mathf.Max(0, framesSinceRegistration)} frame(s) ago";
             return false;
         }
 
-        float secondsSinceRegistration = Time.realtimeSinceStartup - _transportRegisteredRealtime;
+        float secondsSinceRegistration = _runtimeState.RealtimeSinceStartup - _transportRegisteredRealtime;
         if (secondsSinceRegistration < CapabilityStableDelaySeconds)
         {
             reason = $"transport registered {secondsSinceRegistration:0.00}s ago";
@@ -412,12 +457,12 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
 
     private void PruneDisconnectedPeers(bool force = false)
     {
-        if (!force && Time.unscaledTime < _nextPeerPruneTime)
+        if (!force && _runtimeState.UnscaledTime < _nextPeerPruneTime)
         {
             return;
         }
 
-        _nextPeerPruneTime = Time.unscaledTime + 1f;
+        _nextPeerPruneTime = _runtimeState.UnscaledTime + 1f;
         if (!_lastLocalClientId.HasValue)
         {
             return;
@@ -467,6 +512,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         }
 
         _targetSyncReady = waitReason == null;
+        _hasCompatibleModPeer = _targetSyncReady;
         if (_config.DebugNetworkMessages.Value && _lastTargetSyncWaitReason != waitReason)
         {
             _lastTargetSyncWaitReason = waitReason;
@@ -481,11 +527,52 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         }
     }
 
+    private void UpdateCompatiblePeerProbeState()
+    {
+        _lifecycleState = NetworkCompatibilityPolicy.ResolveLifecycleState(
+            _targetSyncReady,
+            _capabilitySent,
+            _capabilityProbeSentRealtime,
+            _runtimeState.RealtimeSinceStartup,
+            CompatiblePeerProbeTimeoutSeconds);
+        _noCompatiblePeerLocalOnly = _lifecycleState == NetworkLifecycleState.NoCompatiblePeerLocalOnly;
+        if (!_noCompatiblePeerLocalOnly)
+        {
+            return;
+        }
+
+        if (_lastDegradationReason != "no compatible Enhanced Spectator peer capability received")
+        {
+            _lastDegradationReason = "no compatible Enhanced Spectator peer capability received";
+            Debug("Networking remains local-only because no compatible Enhanced Spectator peer answered the capability probe.");
+        }
+    }
+
+    private void ClearPendingBusinessSync()
+    {
+        if (!_noCompatiblePeerLocalOnly)
+        {
+            return;
+        }
+
+        _lastObservedTargetState = null;
+        _lastSentTargetState = null;
+        _pendingTargetState = null;
+        _lastObservedPoseState = null;
+        _lastSentPoseState = null;
+        _pendingPoseState = null;
+        _lastObservedVoiceActivityState = null;
+        _lastSentVoiceActivityState = null;
+        _pendingVoiceActivityState = null;
+        _pendingVoiceActivityRefresh = false;
+        _lastSentIdentityState = null;
+    }
+
     private void UpdateLocalSpectatorTarget()
     {
         if (!_spectatorTargetStateProvider.TryGetCurrentSpectatorTarget(out SpectatorTargetState state))
         {
-            state = new SpectatorTargetState(false, _transport.LocalClientId, 0, null, null, DateTime.UtcNow.Ticks);
+            state = new SpectatorTargetState(false, _transport.LocalClientId, 0, null, null, _runtimeState.UtcNowTicks);
         }
 
         if (_lastObservedTargetState != null && _lastObservedTargetState.Equals(state))
@@ -520,7 +607,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             StopNetworkingForLifecycle(lifecycleReason);
             return;
@@ -532,7 +619,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (Time.unscaledTime < _nextTargetSyncTime)
+        if (_runtimeState.UnscaledTime < _nextTargetSyncTime)
         {
             return;
         }
@@ -547,13 +634,13 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         SpectatorTargetSyncMessage message = new SpectatorTargetSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             _pendingTargetState,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
 
         if (_transport.SendSpectatorTarget(message, recipients, out string reason))
         {
             _lastSentTargetState = _pendingTargetState;
             _pendingTargetState = null;
-            _nextTargetSyncTime = Time.unscaledTime + (float)ModNetworkConstants.TargetSyncMinIntervalSeconds;
+            _nextTargetSyncTime = _runtimeState.UnscaledTime + (float)ModNetworkConstants.TargetSyncMinIntervalSeconds;
             Debug(
                 $"Spectator target sent to {recipients.Count} peer(s): spectating={message.State.IsSpectating}, targetClient={FormatNullable(message.State.TargetClientId)}, targetSlot={FormatNullable(message.State.TargetPlayerSlotId)}.");
             return;
@@ -582,7 +669,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
                 null,
                 Vector3.zero,
                 Quaternion.identity,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
         }
 
         if (_lastObservedPoseState != null && _lastObservedPoseState.ApproximatelyEquals(state))
@@ -620,7 +707,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             StopNetworkingForLifecycle(lifecycleReason);
             return;
@@ -632,7 +719,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (Time.unscaledTime < _nextPoseSyncTime)
+        if (_runtimeState.UnscaledTime < _nextPoseSyncTime)
         {
             return;
         }
@@ -647,13 +734,13 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         SpectatorPoseSyncMessage message = new SpectatorPoseSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             _pendingPoseState,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
 
         if (_transport.SendSpectatorPose(message, recipients, out string reason))
         {
             _lastSentPoseState = _pendingPoseState;
             _pendingPoseState = null;
-            _nextPoseSyncTime = Time.unscaledTime + GetPoseSyncInterval();
+            _nextPoseSyncTime = _runtimeState.UnscaledTime + GetPoseSyncInterval();
             if (IsPoseDebugEnabled())
             {
                 ModLog.Debug(
@@ -692,7 +779,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
                 0f,
                 localClientId,
                 localSlotId,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
         }
 
         if (_lastObservedVoiceActivityState == null && !state.HasData)
@@ -740,7 +827,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             StopNetworkingForLifecycle(lifecycleReason);
             return;
@@ -760,7 +847,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (Time.unscaledTime < _nextVoiceActivitySyncTime)
+        if (_runtimeState.UnscaledTime < _nextVoiceActivitySyncTime)
         {
             return;
         }
@@ -775,15 +862,15 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         VoiceActivitySyncMessage message = new VoiceActivitySyncMessage(
             ModNetworkConstants.ProtocolVersion,
             _pendingVoiceActivityState,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
 
         if (_transport.SendVoiceActivity(message, recipients, out string reason))
         {
             _lastSentVoiceActivityState = _pendingVoiceActivityState;
             _pendingVoiceActivityState = null;
             _pendingVoiceActivityRefresh = false;
-            _nextVoiceActivitySyncTime = Time.unscaledTime + GetVoiceActivitySyncInterval();
-            _nextVoiceActivityRefreshTime = Time.unscaledTime + GetVoiceActivityRefreshInterval();
+            _nextVoiceActivitySyncTime = _runtimeState.UnscaledTime + GetVoiceActivitySyncInterval();
+            _nextVoiceActivityRefreshTime = _runtimeState.UnscaledTime + GetVoiceActivityRefreshInterval();
             DebugSentVoiceActivity(message.State, recipients.Count);
             return;
         }
@@ -798,7 +885,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             Debug($"Dropped capability from sender={senderClientId}: {lifecycleReason}.");
             return;
@@ -834,6 +921,12 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         }
 
         bool compatible = _peerRegistry.RegisterRemote(capability, isRelayedCapability);
+        if (compatible)
+        {
+            _noCompatiblePeerLocalOnly = false;
+            _lifecycleState = NetworkLifecycleState.TransportRegistered;
+        }
+
         Debug(
             $"Capability received from sender={senderClientId}, peer={capability.ClientId}, protocol={capability.ProtocolVersion}, targetSync={capability.SupportsSpectatorTargetSync}, voiceSync={capability.SupportsVoiceActivitySync}, voiceRoute={capability.SupportsSpectatorVoiceToTarget}, compatible={compatible}, relayed={isRelayedCapability}.");
 
@@ -897,7 +990,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             Debug($"Dropped spectator target from sender={senderClientId}: {lifecycleReason}.");
             return;
@@ -935,7 +1028,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             Debug($"Dropped spectator pose from sender={senderClientId}: {lifecycleReason}.");
             return;
@@ -977,7 +1070,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             Debug($"Dropped peer identity from sender={senderClientId}: {lifecycleReason}.");
             return;
@@ -1013,7 +1106,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        if (!RuntimeConnectionState.CanUseModNetworking(out string lifecycleReason))
+        if (!_runtimeState.CanUseModNetworking(out string lifecycleReason))
         {
             DebugVoice($"Dropped voice activity from sender={senderClientId}: {lifecycleReason}.");
             return;
@@ -1037,7 +1130,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return;
         }
 
-        _remoteVoiceActivityRegistry.Update(state, DateTime.UtcNow.Ticks);
+        _remoteVoiceActivityRegistry.Update(state, _runtimeState.UtcNowTicks);
         DebugReceivedVoiceActivity(senderClientId, state);
         RelayVoiceActivityState(senderClientId, state);
     }
@@ -1129,7 +1222,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             SpectatorTargetSyncMessage message = new SpectatorTargetSyncMessage(
                 ModNetworkConstants.ProtocolVersion,
                 state,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             if (_transport.SendSpectatorTarget(message, new[] { recipientClientId }, out string reason))
             {
                 Debug($"Relayed known spectator target for peer={state.LocalClientId} to peer={recipientClientId}.");
@@ -1174,7 +1267,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             SpectatorPoseSyncMessage message = new SpectatorPoseSyncMessage(
                 ModNetworkConstants.ProtocolVersion,
                 state,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             if (_transport.SendSpectatorPose(message, new[] { recipientClientId }, out string reason))
             {
                 DebugPose($"Relayed known spectator pose for peer={state.LocalClientId} to peer={recipientClientId}.");
@@ -1256,7 +1349,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         SpectatorTargetSyncMessage message = new SpectatorTargetSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             state,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         if (_transport.SendSpectatorTarget(message, recipients, out string reason))
         {
             Debug($"Relayed spectator target from peer={state.LocalClientId} to {recipients.Count} peer(s).");
@@ -1294,7 +1387,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         SpectatorPoseSyncMessage message = new SpectatorPoseSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             state,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         if (_transport.SendSpectatorPose(message, recipients, out string reason))
         {
             DebugPose($"Relayed spectator pose from peer={state.LocalClientId} to {recipients.Count} peer(s).");
@@ -1332,7 +1425,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         VoiceActivitySyncMessage message = new VoiceActivitySyncMessage(
             ModNetworkConstants.ProtocolVersion,
             state,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         if (_transport.SendVoiceActivity(message, recipients, out string reason))
         {
             DebugRelayedVoiceActivity(state, recipients.Count);
@@ -1365,7 +1458,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             false,
             false,
             false,
-            DateTime.UtcNow.Ticks,
+            _runtimeState.UtcNowTicks,
             false);
         if (_transport.SendCapability(cleanupCapability, recipients, out string capabilityReason))
         {
@@ -1382,11 +1475,11 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             0,
             null,
             null,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         SpectatorTargetSyncMessage targetMessage = new SpectatorTargetSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             targetState,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         if (_transport.SendSpectatorTarget(targetMessage, recipients, out string targetReason))
         {
             Debug($"Relayed disconnected peer target cleanup for peer={peerId} to {recipients.Count} peer(s).");
@@ -1409,11 +1502,11 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
                 0f,
                 peerId,
                 0,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             VoiceActivitySyncMessage voiceMessage = new VoiceActivitySyncMessage(
                 ModNetworkConstants.ProtocolVersion,
                 voiceState,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             if (voiceRecipients.Count > 0)
             {
                 if (_transport.SendVoiceActivity(voiceMessage, voiceRecipients, out string voiceReason))
@@ -1437,11 +1530,11 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
                 null,
                 Vector3.zero,
                 Quaternion.identity,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             SpectatorPoseSyncMessage poseMessage = new SpectatorPoseSyncMessage(
                 ModNetworkConstants.ProtocolVersion,
                 poseState,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             if (_transport.SendSpectatorPose(poseMessage, recipients, out string poseReason))
             {
                 DebugPose($"Relayed disconnected peer pose cleanup for peer={peerId} to {recipients.Count} peer(s).");
@@ -1494,7 +1587,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         SpectatorTargetSyncMessage targetMessage = new SpectatorTargetSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             targetState,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         if (_transport.SendSpectatorTarget(targetMessage, new[] { recipientClientId }, out string targetReason))
         {
             Debug($"Replayed local spectator target to peer={recipientClientId}.");
@@ -1515,7 +1608,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         SpectatorPoseSyncMessage poseMessage = new SpectatorPoseSyncMessage(
             ModNetworkConstants.ProtocolVersion,
             poseState,
-            DateTime.UtcNow.Ticks);
+            _runtimeState.UtcNowTicks);
         if (_transport.SendSpectatorPose(poseMessage, new[] { recipientClientId }, out string poseReason))
         {
             DebugPose($"Replayed local spectator pose to peer={recipientClientId}.");
@@ -1617,7 +1710,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             VoiceActivitySyncMessage message = new VoiceActivitySyncMessage(
                 ModNetworkConstants.ProtocolVersion,
                 state,
-                DateTime.UtcNow.Ticks);
+                _runtimeState.UtcNowTicks);
             if (_transport.SendVoiceActivity(message, new[] { recipientClientId }, out string reason))
             {
                 DebugVoice($"Relayed known voice activity for peer={state.ClientId} to peer={recipientClientId}.");
@@ -1660,9 +1753,9 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         }
 
         _lastDegradationReason = reason;
-        if (Time.frameCount >= _nextLifecycleDebugFrame)
+        if (_runtimeState.FrameCount >= _nextLifecycleDebugFrame)
         {
-            _nextLifecycleDebugFrame = Time.frameCount + 120;
+            _nextLifecycleDebugFrame = _runtimeState.FrameCount + 120;
             Debug($"Networking stopped because shutdown/disconnect was detected: {reason}.");
         }
     }
@@ -1687,7 +1780,10 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
         _lastSentIdentityState = null;
         _networkAvailable = false;
         _targetSyncReady = false;
+        _hasCompatibleModPeer = false;
+        _noCompatiblePeerLocalOnly = false;
         _capabilitySent = false;
+        _capabilityProbeSentRealtime = -1f;
         _lastLocalClientId = null;
         _nextPeerPruneTime = 0f;
         _transportRegisteredRealtime = 0f;
@@ -1706,7 +1802,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             _config.EnableCapabilityHandshake.Value,
             _config.EnableSpectatorTargetSync.Value,
             _config.EnableCapabilityHandshake.Value,
-            DateTime.UtcNow.Ticks,
+            _runtimeState.UtcNowTicks,
             _config.EnableVoiceActivitySync.Value,
             _config.EnableSpectatorVoiceToTarget.Value);
     }
@@ -1755,7 +1851,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
             return false;
         }
 
-        return Time.unscaledTime >= _nextVoiceActivityRefreshTime;
+        return _runtimeState.UnscaledTime >= _nextVoiceActivityRefreshTime;
     }
 
     private bool TryGetLocalVoiceIdentity(out ulong clientId, out ulong slotId)
@@ -1834,7 +1930,7 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
     private bool ShouldLogVoiceActivity(string category, ulong peerId, VoiceActivityState state, bool isRelayed)
     {
         return IsVoiceDebugEnabled()
-            && _voiceDebugLimiter.ShouldLog(category, peerId, Time.frameCount, state, isRelayed);
+            && _voiceDebugLimiter.ShouldLog(category, peerId, _runtimeState.FrameCount, state, isRelayed);
     }
 
     private bool IsVoiceDebugEnabled()
@@ -1844,9 +1940,9 @@ public sealed class EnhancedSpectatorNetworkService : IEnhancedSpectatorNetworkS
 
     private void DebugCapabilityDelay(string reason)
     {
-        if (_config.DebugNetworkMessages.Value && Time.frameCount >= _nextCapabilityDelayDebugFrame)
+        if (_config.DebugNetworkMessages.Value && _runtimeState.FrameCount >= _nextCapabilityDelayDebugFrame)
         {
-            _nextCapabilityDelayDebugFrame = Time.frameCount + 120;
+            _nextCapabilityDelayDebugFrame = _runtimeState.FrameCount + 120;
             ModLog.Debug($"Capability delayed because network is not stable yet: {reason}.");
         }
     }

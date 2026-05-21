@@ -23,6 +23,11 @@ internal static class Program
             VoiceActivityRecipientsRequireVoiceCapability();
             RelayedPeersAreNotDirectSendRecipientsByDefault();
             ClientAcceptsOnlyServerRelayedForeignOrigins();
+            ClientRejectsServerRelayWhenOriginWasNotMarkedRelayed();
+            ClientRejectsDirectSenderForRelayedOrigin();
+            HostRejectsForeignOriginFromDifferentSender();
+            CapabilityProbeTimeoutUsesNoCompatiblePeerLocalOnlyState();
+            CompatiblePeerKeepsTransportRegisteredState();
             TargetClientIdTakesPriorityOverSlotFallback();
             TargetSlotFallbackWorksOnlyWhenClientIdMissing();
             GlobalRemoteSpectatorVisibilityAllowsNonLocalTargets();
@@ -64,6 +69,7 @@ internal static class Program
             FreecamTargetSwitchInvalidTargetClearsAfterGrace();
             FreecamInactiveSpectateCameraSoftPausesDuringGrace();
             FreecamInactiveSpectateCameraPreservesPoseAfterGrace();
+            FreecamLifecycleUnsafeSoftPausesWhenPoseExists();
             Console.WriteLine("All EnhancedSpectator tests passed.");
             return 0;
         }
@@ -142,6 +148,99 @@ internal static class Program
         AssertFalse(acceptsClientSpoof, $"client should reject non-host relayed foreign origin: {clientSpoofReason}");
     }
 
+    private static void ClientRejectsServerRelayWhenOriginWasNotMarkedRelayed()
+    {
+        RemotePeerRegistry registry = new RemotePeerRegistry();
+        registry.RegisterLocal(Capability(2));
+        registry.RegisterRemote(Capability(0), isRelayed: false);
+        registry.RegisterRemote(Capability(1), isRelayed: false);
+
+        bool accepts = HostRelayPlanner.CanAcceptSpectatorState(
+            isHost: false,
+            localClientId: 2,
+            serverClientId: 0,
+            senderClientId: 0,
+            originClientId: 1,
+            registry,
+            out string reason);
+
+        AssertFalse(accepts, $"client should reject server relay for a direct peer: {reason}");
+    }
+
+    private static void ClientRejectsDirectSenderForRelayedOrigin()
+    {
+        RemotePeerRegistry registry = new RemotePeerRegistry();
+        registry.RegisterLocal(Capability(2));
+        registry.RegisterRemote(Capability(0), isRelayed: false);
+        registry.RegisterRemote(Capability(1), isRelayed: true);
+
+        bool accepts = HostRelayPlanner.CanAcceptSpectatorState(
+            isHost: false,
+            localClientId: 2,
+            serverClientId: 0,
+            senderClientId: 1,
+            originClientId: 1,
+            registry,
+            out string reason);
+
+        AssertFalse(accepts, $"client should reject direct state from a host-relayed origin: {reason}");
+    }
+
+    private static void HostRejectsForeignOriginFromDifferentSender()
+    {
+        RemotePeerRegistry registry = new RemotePeerRegistry();
+        registry.RegisterLocal(Capability(0));
+        registry.RegisterRemote(Capability(1), isRelayed: false);
+        registry.RegisterRemote(Capability(2), isRelayed: false);
+
+        bool accepts = HostRelayPlanner.CanAcceptSpectatorState(
+            isHost: true,
+            localClientId: 0,
+            serverClientId: 0,
+            senderClientId: 2,
+            originClientId: 1,
+            registry,
+            out string reason);
+
+        AssertFalse(accepts, $"host should reject client state where sender does not match origin: {reason}");
+    }
+
+    private static void CapabilityProbeTimeoutUsesNoCompatiblePeerLocalOnlyState()
+    {
+        NetworkLifecycleState lifecycleState = NetworkCompatibilityPolicy.ResolveLifecycleState(
+            targetSyncReady: false,
+            capabilitySent: true,
+            capabilityProbeSentRealtime: 1f,
+            currentRealtime: 4f,
+            noCompatiblePeerTimeoutSeconds: 2.5f);
+
+        AssertEqual(
+            NetworkLifecycleState.NoCompatiblePeerLocalOnly,
+            lifecycleState,
+            "capability probe timeout without compatible peer should use no-compatible local-only state");
+        AssertFalse(
+            NetworkCompatibilityPolicy.ShouldRunBusinessSync(lifecycleState, targetSyncReady: false),
+            "no-compatible local-only state should not run target/pose/voice business sync");
+    }
+
+    private static void CompatiblePeerKeepsTransportRegisteredState()
+    {
+        NetworkLifecycleState lifecycleState = NetworkCompatibilityPolicy.ResolveLifecycleState(
+            targetSyncReady: true,
+            capabilitySent: true,
+            capabilityProbeSentRealtime: 1f,
+            currentRealtime: 10f,
+            noCompatiblePeerTimeoutSeconds: 2.5f);
+
+        AssertEqual(
+            NetworkLifecycleState.TransportRegistered,
+            lifecycleState,
+            "compatible peer should keep transport registered lifecycle state");
+        AssertTrue(
+            NetworkCompatibilityPolicy.ShouldRunBusinessSync(lifecycleState, targetSyncReady: true),
+            "compatible peer should allow target/pose/voice business sync");
+    }
+
     private static ModPeerCapability Capability(
         ulong clientId,
         bool supportsVoiceActivitySync = true,
@@ -216,6 +315,21 @@ internal static class Program
             SpectatorFreecamRecoveryAction.DeactivatePreservePose,
             action,
             "inactive spectate camera should preserve pose but stop writing after grace expires");
+    }
+
+    private static void FreecamLifecycleUnsafeSoftPausesWhenPoseExists()
+    {
+        SpectatorFreecamRecoveryAction action = SpectatorFreecamRecoveryPolicy.GetIneligibleAction(
+            SpectatorFreecamIneligibleReason.LifecycleUnsafe,
+            currentFrame: 30,
+            hasPose: true,
+            targetSwitchGraceUntilFrame: -1,
+            cameraInactiveGraceUntilFrame: -1);
+
+        AssertEqual(
+            SpectatorFreecamRecoveryAction.SoftPausePreservePose,
+            action,
+            "lifecycle unsafe windows should preserve existing freecam pose without writing camera");
     }
 
     private static void TargetClientIdTakesPriorityOverSlotFallback()

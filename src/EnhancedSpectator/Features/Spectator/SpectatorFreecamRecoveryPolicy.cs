@@ -33,7 +33,12 @@ public enum SpectatorFreecamIneligibleReason
     /// <summary>
     /// Vanilla game-over spectator override is active.
     /// </summary>
-    GameOverOverride
+    GameOverOverride,
+
+    /// <summary>
+    /// Runtime lifecycle is in a short unsafe window such as scene transition or shutdown.
+    /// </summary>
+    LifecycleUnsafe
 }
 
 /// <summary>
@@ -102,6 +107,13 @@ public static class SpectatorFreecamRecoveryPolicy
         if (reason == SpectatorFreecamIneligibleReason.SpectateCameraInactive)
         {
             return hasPose && IsWithinGrace(currentFrame, cameraInactiveGraceUntilFrame)
+                ? SpectatorFreecamRecoveryAction.SoftPausePreservePose
+                : SpectatorFreecamRecoveryAction.DeactivatePreservePose;
+        }
+
+        if (reason == SpectatorFreecamIneligibleReason.LifecycleUnsafe)
+        {
+            return hasPose
                 ? SpectatorFreecamRecoveryAction.SoftPausePreservePose
                 : SpectatorFreecamRecoveryAction.DeactivatePreservePose;
         }

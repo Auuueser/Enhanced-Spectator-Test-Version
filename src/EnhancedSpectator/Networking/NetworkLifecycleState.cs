@@ -21,6 +21,11 @@ public enum NetworkLifecycleState
     TransportRegistered,
 
     /// <summary>
+    /// Named message handlers are registered, but no compatible Enhanced Spectator peer has answered the capability probe.
+    /// </summary>
+    NoCompatiblePeerLocalOnly,
+
+    /// <summary>
     /// The networking service has been disposed.
     /// </summary>
     Disposed,

@@ -184,6 +184,17 @@ public sealed class SpectatorLifecyclePatchModule : IPatchModule
 
         private static bool Prefix(PlayerControllerB __instance)
         {
+            if (!TryGetLocalDeadSpectatorContext(__instance, out string contextReason))
+            {
+                if (contextReason.Length > 0 && Time.frameCount >= _nextUnsafeDebugFrame)
+                {
+                    _nextUnsafeDebugFrame = Time.frameCount + 120;
+                    ModLog.Debug($"Vanilla spectator target switch suppression skipped: {contextReason}.");
+                }
+
+                return true;
+            }
+
             if (RuntimeConnectionState.ShouldSkipVanillaSpectatorTargetSwitch(out string unsafeReason))
             {
                 if (Time.frameCount >= _nextUnsafeDebugFrame)
@@ -220,6 +231,42 @@ public sealed class SpectatorLifecyclePatchModule : IPatchModule
                         + ".");
                 }
 
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool TryGetLocalDeadSpectatorContext(PlayerControllerB player, out string reason)
+        {
+            reason = string.Empty;
+            if (player == null)
+            {
+                reason = "patch instance unavailable";
+                return false;
+            }
+
+            StartOfRound round = StartOfRound.Instance;
+            if (round == null)
+            {
+                reason = "round unavailable";
+                return false;
+            }
+
+            PlayerControllerB localPlayer = round.localPlayerController;
+            if (localPlayer == null)
+            {
+                reason = "local player unavailable";
+                return false;
+            }
+
+            if (!IsLocalPlayerOrOwner(player, localPlayer))
+            {
+                return false;
+            }
+
+            if (!localPlayer.isPlayerDead)
+            {
                 return false;
             }
 
