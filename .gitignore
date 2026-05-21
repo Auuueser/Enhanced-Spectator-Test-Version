@@ -1,0 +1,47 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+
+# IDE and editor state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+
+# Compiled artifacts and packages
+*.dll
+*.pdb
+*.mdb
+*.exe
+*.zip
+*.nupkg
+packages/
+
+# Local game and mod runtime files
+BepInEx/
+Lethal Company_Data/
+Managed/
+plugins/
+game/
+libs/
+references/
+*.publicized.dll
+*.mm.dll
+
+# Release/package working folders
+thunderstore/
+dist/
+release/
+backups/
+
+# OS files
+Thumbs.db
+.DS_Store

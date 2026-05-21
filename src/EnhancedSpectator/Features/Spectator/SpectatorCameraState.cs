@@ -1,0 +1,49 @@
+using UnityEngine;
+
+namespace EnhancedSpectator.Features.Spectator;
+
+/// <summary>
+/// Tracks the current enhanced spectator camera state.
+/// </summary>
+public sealed class SpectatorCameraState
+{
+    /// <summary>
+    /// Gets whether enhanced freecam is actively writing the camera transform.
+    /// </summary>
+    public bool IsActive { get; internal set; }
+
+    /// <summary>
+    /// Gets whether the user currently wants freecam enabled.
+    /// </summary>
+    public bool UserEnabled { get; internal set; }
+
+    /// <summary>
+    /// Gets the current offset from the spectated target anchor.
+    /// </summary>
+    public Vector3 Offset { get; internal set; }
+
+    /// <summary>
+    /// Gets the current camera rotation.
+    /// </summary>
+    public Quaternion Rotation { get; internal set; } = Quaternion.identity;
+
+    /// <summary>
+    /// Gets whether a world-space camera pose has been observed.
+    /// </summary>
+    public bool HasWorldPose { get; internal set; }
+
+    /// <summary>
+    /// Gets the latest spectator camera world position.
+    /// </summary>
+    public Vector3 WorldPosition { get; internal set; }
+
+    /// <summary>
+    /// Gets the current target slot id when available.
+    /// </summary>
+    public ulong? TargetSlotId { get; internal set; }
+
+    /// <summary>
+    /// Gets the current target Netcode client id when available.
+    /// </summary>
+    public ulong? TargetActualClientId { get; internal set; }
+}
