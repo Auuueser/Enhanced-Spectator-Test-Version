@@ -108,25 +108,46 @@ public sealed class SpectatorModule :
     public bool TryGetCurrentSpectatorPose(out SpectatorPoseState state)
     {
         if (_initialized
-            && _freecamController.State.IsActive
             && _gameSpectatorAdapter.TryGetLocalSpectatorSnapshot(out GameSpectatorSnapshot snapshot)
             && snapshot.HasRound
             && snapshot.HasLocalPlayer
             && snapshot.LocalPlayerSlotId.HasValue
             && snapshot.LocalPlayerActualClientId.HasValue)
         {
-            bool hasPose = snapshot.IsLocalPlayerDead
-                && snapshot.HasSpectatedTarget
-                && _freecamController.State.IsActive
-                && _freecamController.State.HasWorldPose;
+            bool useFreecamPose = SpectatorPoseSourceRules.ShouldUseFreecamPose(
+                _freecamController.State.IsActive,
+                _freecamController.State.HasWorldPose);
+            bool useVanillaSpectatorPose = !useFreecamPose
+                && SpectatorPoseSourceRules.ShouldUseVanillaSpectatorPose(
+                    snapshot.SpectateCamera != null,
+                    snapshot.IsSpectateCameraActive);
+            bool hasPose = SpectatorPoseSourceRules.ShouldPublishSpectatorPose(
+                snapshot.IsLocalPlayerDead,
+                snapshot.HasSpectatedTarget,
+                useFreecamPose,
+                useVanillaSpectatorPose);
+            Vector3 position = Vector3.zero;
+            Quaternion rotation = Quaternion.identity;
+            if (hasPose && useFreecamPose)
+            {
+                position = _freecamController.State.WorldPosition;
+                rotation = _freecamController.State.Rotation;
+            }
+            else if (hasPose && snapshot.SpectateCamera != null)
+            {
+                Transform cameraTransform = snapshot.SpectateCamera.transform;
+                position = cameraTransform.position;
+                rotation = cameraTransform.rotation;
+            }
+
             state = new SpectatorPoseState(
                 hasPose,
                 snapshot.LocalPlayerActualClientId.Value,
                 snapshot.LocalPlayerSlotId.Value,
                 hasPose ? snapshot.SpectatedPlayerActualClientId : null,
                 hasPose ? snapshot.SpectatedPlayerSlotId : null,
-                hasPose ? _freecamController.State.WorldPosition : Vector3.zero,
-                hasPose ? _freecamController.State.Rotation : Quaternion.identity,
+                position,
+                rotation,
                 DateTime.UtcNow.Ticks);
             return true;
         }

@@ -73,6 +73,8 @@ internal static class Program
             FreecamInactiveSpectateCameraSoftPausesDuringGrace();
             FreecamInactiveSpectateCameraPreservesPoseAfterGrace();
             FreecamLifecycleUnsafeSoftPausesWhenPoseExists();
+            SpectatorPoseSyncUsesVanillaPoseWhenFreecamIsInactive();
+            SpectatorPoseSyncDoesNotPublishWithoutFreecamOrActiveVanillaCamera();
             Console.WriteLine("All EnhancedSpectator tests passed.");
             return 0;
         }
@@ -333,6 +335,46 @@ internal static class Program
             SpectatorFreecamRecoveryAction.SoftPausePreservePose,
             action,
             "lifecycle unsafe windows should preserve existing freecam pose without writing camera");
+    }
+
+    private static void SpectatorPoseSyncUsesVanillaPoseWhenFreecamIsInactive()
+    {
+        bool useFreecamPose = SpectatorPoseSourceRules.ShouldUseFreecamPose(
+            freecamActive: false,
+            freecamHasWorldPose: true);
+        bool useVanillaPose = !useFreecamPose
+            && SpectatorPoseSourceRules.ShouldUseVanillaSpectatorPose(
+                hasSpectateCamera: true,
+                isSpectateCameraActive: true);
+        bool shouldPublish = SpectatorPoseSourceRules.ShouldPublishSpectatorPose(
+            isLocalPlayerDead: true,
+            hasSpectatedTarget: true,
+            useFreecamPose,
+            useVanillaPose);
+
+        AssertFalse(useFreecamPose, "disabled freecam should not publish the enhanced freecam pose");
+        AssertTrue(useVanillaPose, "disabled freecam should fall back to the vanilla spectator camera pose");
+        AssertTrue(shouldPublish, "vanilla spectating should continue publishing pose so remote spectator visuals remain visible");
+    }
+
+    private static void SpectatorPoseSyncDoesNotPublishWithoutFreecamOrActiveVanillaCamera()
+    {
+        bool useFreecamPose = SpectatorPoseSourceRules.ShouldUseFreecamPose(
+            freecamActive: false,
+            freecamHasWorldPose: false);
+        bool useVanillaPose = !useFreecamPose
+            && SpectatorPoseSourceRules.ShouldUseVanillaSpectatorPose(
+                hasSpectateCamera: true,
+                isSpectateCameraActive: false);
+        bool shouldPublish = SpectatorPoseSourceRules.ShouldPublishSpectatorPose(
+            isLocalPlayerDead: true,
+            hasSpectatedTarget: true,
+            useFreecamPose,
+            useVanillaPose);
+
+        AssertFalse(useFreecamPose, "inactive freecam without a pose should not be a pose source");
+        AssertFalse(useVanillaPose, "inactive vanilla spectator camera should not be a pose source");
+        AssertFalse(shouldPublish, "pose sync should publish inactive state when no safe pose source exists");
     }
 
     private static void TargetClientIdTakesPriorityOverSlotFallback()
