@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3
+
+### Spectator Visibility
+
+- Kept remote floating-head visuals visible when a dead spectator toggles from enhanced freecam to vanilla spectator view.
+- Restored enhanced freecam pose sync cleanly after toggling back from vanilla spectator view.
+- Continued publishing vanilla spectator camera pose while enhanced freecam is disabled and the player is still spectating.
+
+### Stability
+
+- Added regression coverage for the enhanced-freecam to vanilla-spectator to enhanced-freecam cycle.
+
 ## 0.1.2
 
 ### Spectator Stability
