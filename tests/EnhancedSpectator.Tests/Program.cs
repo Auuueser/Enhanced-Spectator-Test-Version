@@ -75,6 +75,7 @@ internal static class Program
             FreecamLifecycleUnsafeSoftPausesWhenPoseExists();
             SpectatorPoseSyncUsesVanillaPoseWhenFreecamIsInactive();
             SpectatorPoseSyncDoesNotPublishWithoutFreecamOrActiveVanillaCamera();
+            RemotePoseRegistryKeepsVisiblePoseThroughFreecamVanillaFreecamCycle();
             Console.WriteLine("All EnhancedSpectator tests passed.");
             return 0;
         }
@@ -375,6 +376,55 @@ internal static class Program
         AssertFalse(useFreecamPose, "inactive freecam without a pose should not be a pose source");
         AssertFalse(useVanillaPose, "inactive vanilla spectator camera should not be a pose source");
         AssertFalse(shouldPublish, "pose sync should publish inactive state when no safe pose source exists");
+    }
+
+    private static void RemotePoseRegistryKeepsVisiblePoseThroughFreecamVanillaFreecamCycle()
+    {
+        RemoteSpectatorPoseRegistry registry = new RemoteSpectatorPoseRegistry();
+        SpectatorPoseState freecamPose = new SpectatorPoseState(
+            isSpectating: true,
+            localClientId: 2,
+            localPlayerSlotId: 2,
+            targetClientId: 0,
+            targetPlayerSlotId: 0,
+            position: new Vector3(1f, 2f, 3f),
+            rotation: Quaternion.identity,
+            timestampTicks: 100);
+        SpectatorPoseState vanillaPose = new SpectatorPoseState(
+            isSpectating: SpectatorPoseSourceRules.ShouldPublishSpectatorPose(
+                isLocalPlayerDead: true,
+                hasSpectatedTarget: true,
+                useFreecamPose: false,
+                useVanillaSpectatorPose: true),
+            localClientId: 2,
+            localPlayerSlotId: 2,
+            targetClientId: 0,
+            targetPlayerSlotId: 0,
+            position: new Vector3(4f, 5f, 6f),
+            rotation: new Quaternion(0f, 0.70710677f, 0f, 0.70710677f),
+            timestampTicks: 101);
+        SpectatorPoseState restoredFreecamPose = new SpectatorPoseState(
+            isSpectating: true,
+            localClientId: 2,
+            localPlayerSlotId: 2,
+            targetClientId: 0,
+            targetPlayerSlotId: 0,
+            position: new Vector3(7f, 8f, 9f),
+            rotation: new Quaternion(0.08583165f, 0.1729874f, -0.01513444f, 0.9810603f),
+            timestampTicks: 102);
+
+        registry.Update(freecamPose);
+        AssertTrue(registry.TryGet(2, out SpectatorPoseState storedFreecamPose), "freecam pose should be visible");
+        AssertVectorNear(new Vector3(1f, 2f, 3f), storedFreecamPose.Position, "freecam pose should be stored");
+
+        registry.Update(vanillaPose);
+        AssertTrue(registry.TryGet(2, out SpectatorPoseState storedVanillaPose), "vanilla fallback pose should keep the spectator visible");
+        AssertTrue(storedVanillaPose.IsSpectating, "vanilla fallback pose should not clear the remote pose registry");
+        AssertVectorNear(new Vector3(4f, 5f, 6f), storedVanillaPose.Position, "vanilla fallback pose should replace the previous freecam pose");
+
+        registry.Update(restoredFreecamPose);
+        AssertTrue(registry.TryGet(2, out SpectatorPoseState storedRestoredFreecamPose), "restored freecam pose should remain visible");
+        AssertVectorNear(new Vector3(7f, 8f, 9f), storedRestoredFreecamPose.Position, "restored freecam pose should replace the vanilla fallback pose");
     }
 
     private static void TargetClientIdTakesPriorityOverSlotFallback()
